@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Analizador léxico y sintáctico visual: detecta el lenguaje, lista tokens y dibuja el AST en SVG." />
+  <title>Analizador Sintáctico Visual · AST en SVG</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">&lt;/&gt;</span>
+      <div class="brand-text">
+        <h1>Analizador Sintáctico Visual</h1>
+        <p>Tokens · Detección de lenguaje · Árbol de sintaxis abstracta</p>
+      </div>
+    </div>
+    <button class="hamburger" aria-label="Mostrar panel de código" id="hamburger" aria-expanded="false">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    <div class="badges" aria-label="Lenguajes soportados">
+      <span class="badge badge--python">Python</span>
+      <span class="badge badge--java">Java</span>
+      <span class="badge badge--js">JavaScript</span>
+      <span class="badge badge--c">C</span>
+      <span class="badge badge--rust">Rust</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Panel del editor -->
+    <section class="panel panel--editor" aria-labelledby="editor-title">
+      <div class="panel-head">
+        <h2 id="editor-title"><span class="dot dot--red"></span><span class="dot dot--yellow"></span><span class="dot dot--green"></span> Código fuente</h2>
+        <span class="hint">Pega tu código y pulsa Analizar</span>
+      </div>
+
+      <div class="examples" role="group" aria-label="Cargar ejemplos">
+        <span class="examples-label">Ejemplos:</span>
+        <button type="button" class="chip" data-example="python">Python</button>
+        <button type="button" class="chip" data-example="java">Java</button>
+        <button type="button" class="chip" data-example="javascript">JavaScript</button>
+        <button type="button" class="chip" data-example="c">C</button>
+        <button type="button" class="chip" data-example="rust">Rust</button>
+      </div>
+
+      <div class="editor-wrap">
+        <div class="gutter" id="gutter" aria-hidden="true">1</div>
+        <textarea
+          id="code-input"
+          class="code-input"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder="Escribe o pega código Python, Java, JavaScript, C o Rust…"
+          aria-label="Editor de código"
+        ></textarea>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="btn-analyze" class="btn btn--primary">
+          <span aria-hidden="true">▶</span> Analizar Código
+        </button>
+        <button type="button" id="btn-clear" class="btn btn--ghost">Limpiar</button>
+      </div>
+
+      <div id="status" class="status status--idle" role="status" aria-live="polite">
+        <span class="status-icon" aria-hidden="true">•</span>
+        <span class="status-text">Esperando código para analizar.</span>
+      </div>
+    </section>
+
+    <!-- Panel del árbol -->
+    <section class="panel panel--tree" aria-labelledby="tree-title">
+      <div class="panel-head">
+        <h2 id="tree-title">Árbol de sintaxis abstracta</h2>
+        <div class="tree-meta" id="tree-meta">
+          <span id="lang-pill" class="pill pill--muted">Sin analizar</span>
+          <span id="token-count" class="pill pill--muted">0 tokens</span>
+        </div>
+        <button id="btn-modal" class="btn btn--primary" aria-label="Ver diagrama en modal" disabled>Modal</button>
+      </div>
+
+      <div class="legend" aria-label="Leyenda de nodos">
+        <span class="legend-item"><i style="--c:#6ea8fe"></i>Raíz</span>
+        <span class="legend-item"><i style="--c:#f7b955"></i>Declaración</span>
+        <span class="legend-item"><i style="--c:#c792ea"></i>Función</span>
+        <span class="legend-item"><i style="--c:#ff8fa3"></i>Control</span>
+        <span class="legend-item"><i style="--c:#4dd4ac"></i>Operador</span>
+        <span class="legend-item"><i style="--c:#79d0ff"></i>Identificador</span>
+        <span class="legend-item"><i style="--c:#a5e075"></i>Literal</span>
+        <span class="legend-item"><i style="--c:#9aa7bd"></i>Llamada / Bloque</span>
+      </div>
+
+      <div class="canvas-wrap" id="canvas-wrap">
+        <svg id="ast-svg" class="ast-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Árbol de sintaxis abstracta">
+          <g id="viewport">
+            <g id="edges-layer"></g>
+            <g id="nodes-layer"></g>
+          </g>
+        </svg>
+
+        <div id="empty-state" class="empty-state">
+          <div class="empty-graphic" aria-hidden="true">⌘</div>
+          <p class="empty-title">Todavía no hay árbol</p>
+          <p class="empty-text">Analiza un fragmento de código para ver sus tokens y la jerarquía sintáctica.</p>
+        </div>
+
+        <div class="zoom-controls" role="group" aria-label="Controles de zoom">
+          <button type="button" id="btn-zoom-in" class="zoom-btn" title="Acercar">+</button>
+          <button type="button" id="btn-zoom-out" class="zoom-btn" title="Alejar">−</button>
+          <button type="button" id="btn-fit" class="zoom-btn zoom-btn--wide" title="Ajustar a la pantalla">Ajustar</button>
+        </div>
+
+        <div class="canvas-hint">Rueda: zoom · Arrastrar: mover · Clic en nodo: plegar</div>
+      </div>
+
+      <details id="tokens-details" class="tokens-details" open>
+        <summary>
+          <span>Tabla de tokens</span>
+          <span id="tokens-summary" class="tokens-summary">0 tokens</span>
+        </summary>
+        <div class="table-wrap">
+          <table class="tokens-table">
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Token &lt;'elemento', tipo&gt;</th>
+                <th scope="col">Línea</th>
+              </tr>
+            </thead>
+            <tbody id="tokens-body">
+              <tr class="table-empty"><td colspan="3">Sin tokens todavía.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>HTML5 + CSS3 + JavaScript nativo · sin dependencias</span>
+    <span>Hecho para GitHub Pages</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
