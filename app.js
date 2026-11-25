@@ -74,6 +74,19 @@ const LANGUAGES = {
     literalWords: new Set(['true', 'false']),
     lineComment: '//',
     blockComment: ['/*', '*/']
+  },
+  /* Lenguaje didáctico usado en teoría de autómatas:
+     if <cond> then <sentencia>;  ·  int a, b;  ·  a = b + c;  ·  { ... } */
+  pseudo: {
+    name: 'Lenguaje didáctico',
+    keywords: new Set([
+      'if', 'then', 'else', 'while', 'do', 'begin', 'end',
+      'int', 'float', 'char', 'bool', 'double', 'long', 'short', 'void',
+      'true', 'false', 'and', 'or', 'not', 'print', 'read', 'return'
+    ]),
+    literalWords: new Set(['true', 'false']),
+    lineComment: '//',
+    blockComment: ['/*', '*/']
   }
 };
 
@@ -494,6 +507,12 @@ const DETECTION_FEATURES = {
     [/&mut\b|&str\b/, 6],
     [/\bmatch[ \t]+[\w&:]*[ \t]*\{/, 4],
     [/\bpub[ \t]+(?:fn|struct|enum|mod)/, 6]
+  ],
+  pseudo: [
+    [/\bif\b[^;{}]*\bthen\b/, 10],
+    [/\b(?:int|float|char|bool)\s+[A-Za-z_]\w*\s*(?:[,;=])/, 6],
+    [/\b(?:while|do|begin|end)\b/, 3],
+    [/(?:^|;)\s*[A-Za-z_]\w*\s*=\s*[^;{}]+;/, 4]
   ]
 };
 
@@ -681,6 +700,13 @@ const EXAMPLES = {
     '        println!("Promedio bajo");',
     '    }',
     '}'
+  ].join('\n'),
+  pseudo: [
+    'if x=3 then y=8;',
+    'int w,x,y,z;',
+    'int i=4;',
+    'i=6;',
+    'w=i+j;'
   ].join('\n')
 };
 
@@ -722,6 +748,7 @@ const PRECEDENCE = {
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '//=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']);
 
 const TYPE_KEYWORDS = {
+  pseudo: new Set(['int', 'float', 'char', 'bool', 'double', 'long', 'short', 'void']),
   java: new Set(['boolean', 'byte', 'char', 'double', 'float', 'int', 'long', 'short', 'void', 'String']),
   c: new Set(['char', 'double', 'float', 'int', 'long', 'short', 'signed', 'unsigned', 'void', 'struct', 'enum', 'union', 'const', 'static', 'bool', 'size_t']),
   rust: new Set(['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'bool', 'char', 'str', 'String', 'usize', 'isize'])
@@ -1966,6 +1993,430 @@ function parse(tokens, langCode) {
   return new Parser(tokens, langCode).parseProgram();
 }
 
+/* ------------------------- Diagrama de flujo de sentencias -------------------------
+   El dibujo no usa el AST "crudo" del parser: lo proyecta a un árbol vertical
+   con un nodo terminal `;` por sentencia, convergencia de operandos y nodos `|`
+   para las llaves. El lenguaje didáctico (if/then, int, asignaciones) se
+   reconstruye directamente desde los tokens para respetar la jerarquía pedida.
+   ------------------------------------------------------------------------------- */
+
+const DIAGRAM_PAD = 40;
+
+const DIDACTIC_TYPES = new Set([
+  'int', 'float', 'char', 'bool', 'double', 'long', 'short', 'void'
+]);
+
+const DIDACTIC_PRECEDENCE = {
+  'or': 1, '||': 1,
+  'and': 2, '&&': 2,
+  '==': 3, '=': 3, '!=': 3, '<>': 3,
+  '<': 4, '>': 4, '<=': 4, '>=': 4,
+  '+': 5, '-': 5,
+  '*': 6, '/': 6, '%': 6,
+  '**': 7
+};
+
+const SIMPLE_STATEMENT_TYPES = new Set([
+  'declaracion', 'asignacion', 'operador', 'identificador', 'literal',
+  'llamada', 'acceso', 'indice', 'directiva', 'tipo'
+]);
+
+const SEMICOLON_CONTROLS = new Set([
+  'return', 'break', 'continue', 'pass', 'raise', 'del', 'global', 'nonlocal'
+]);
+
+function diagramNode(type, label, extra) {
+  const node = {
+    type: type,
+    label: label == null ? type : String(label),
+    children: [],
+    parents: []
+  };
+  if (extra) Object.keys(extra).forEach((key) => { node[key] = extra[key]; });
+  return node;
+}
+
+function diagramLink(parent, child) {
+  if (!parent || !child) return;
+  parent.children.push(child);
+  if (!child.parents) child.parents = [];
+  if (child.parents.indexOf(parent) === -1) child.parents.push(parent);
+}
+
+function diagramMerge(parents, target) {
+  const unique = [];
+  for (const parent of parents || []) {
+    if (parent && unique.indexOf(parent) === -1) unique.push(parent);
+  }
+  for (const parent of unique) diagramLink(parent, target);
+}
+
+function diagramLeaves(node, out, seen) {
+  if (!node) return out;
+  const visited = seen || new Set();
+  if (visited.has(node)) return out;
+  visited.add(node);
+  if (!node.children.length) {
+    if (out.indexOf(node) === -1) out.push(node);
+    return out;
+  }
+  for (const child of node.children) diagramLeaves(child, out, visited);
+  return out;
+}
+
+function diagramShouldEndWithSemicolon(node) {
+  if (!node) return false;
+  if (node.type === 'control') return SEMICOLON_CONTROLS.has(node.label);
+  if (node.type === 'bloque' || node.type === 'funcion') return false;
+  return SIMPLE_STATEMENT_TYPES.has(node.type);
+}
+
+class DidacticParser {
+  constructor(tokens) {
+    this.tokens = tokens.filter((token) => (
+      token.type !== 'eof' &&
+      token.type !== 'comentario' &&
+      token.type !== 'nueva_linea' &&
+      token.type !== 'indent' &&
+      token.type !== 'dedent'
+    ));
+    this.pos = 0;
+  }
+
+  peek(offset) {
+    return this.tokens[this.pos + (offset || 0)] || null;
+  }
+
+  next() {
+    const token = this.peek();
+    if (this.pos < this.tokens.length) this.pos++;
+    return token;
+  }
+
+  atEnd() {
+    return this.pos >= this.tokens.length;
+  }
+
+  check(value) {
+    const token = this.peek();
+    return !!token && token.value === value;
+  }
+
+  match(value) {
+    if (this.check(value)) {
+      this.next();
+      return true;
+    }
+    return false;
+  }
+
+  isIdent(token) {
+    return !!token && token.type === 'identificador';
+  }
+
+  consumeSemicolon() {
+    if (this.match(';')) return diagramNode('puntuacion', ';');
+    return null;
+  }
+
+  parseProgram() {
+    const root = diagramNode('programa', 'programa');
+    let previous = root;
+
+    while (!this.atEnd()) {
+      const before = this.pos;
+      const statement = this.parseStatement();
+      if (statement) {
+        diagramLink(previous, statement.root);
+        previous = statement.end || statement.root;
+      }
+      if (this.pos === before) this.next();
+    }
+
+    return root;
+  }
+
+  parseStatement() {
+    const token = this.peek();
+    if (!token) return null;
+
+    if (token.value === '{' || token.value === '}') {
+      this.next();
+      /* Las llaves se muestran como nodos secuenciales `|` del flujo */
+      const pipe = diagramNode('puntuacion', '|');
+      return { root: pipe, end: pipe };
+    }
+
+    if (token.value === ';') {
+      this.next();
+      const semi = diagramNode('puntuacion', ';');
+      return { root: semi, end: semi };
+    }
+
+    if (token.value === 'if') return this.parseConditional('if', 'then');
+    if (token.value === 'while') return this.parseConditional('while', 'do');
+    if (DIDACTIC_TYPES.has(token.value)) return this.parseDeclaration();
+    return this.parseExpressionStatement();
+  }
+
+  parseConditional(keyword, connectorLabel) {
+    this.next();
+    const root = diagramNode('control', keyword);
+    const condition = this.parseExpression(0);
+    const conditionLeaves = [];
+
+    if (condition) {
+      diagramLink(root, condition.root);
+      diagramLeaves(condition.root, conditionLeaves);
+    }
+
+    const connector = diagramNode('control', connectorLabel);
+    diagramMerge(conditionLeaves.length ? conditionLeaves : [root], connector);
+
+    /* `then` / `do` es un conector, no un operando */
+    if (this.check(connectorLabel)) this.next();
+
+    const action = this.parseStatement();
+    let end = connector;
+
+    if (action) {
+      diagramLink(connector, action.root);
+      end = action.end || action.root;
+    } else {
+      const trailing = this.consumeSemicolon();
+      if (trailing) {
+        const leaves = [];
+        diagramLeaves(connector, leaves);
+        diagramMerge(leaves, trailing);
+        end = trailing;
+      }
+    }
+
+    return { root: root, end: end };
+  }
+
+  parseDeclaration() {
+    const typeToken = this.next();
+    const root = diagramNode('declaracion', typeToken.value);
+    const leaves = [];
+    let declaredSomething = false;
+
+    while (!this.atEnd() && !this.check(';')) {
+      if (!this.isIdent(this.peek())) break;
+      declaredSomething = true;
+
+      const name = this.next().value;
+      const identifier = diagramNode('identificador', name);
+
+      if (this.match('=')) {
+        const value = this.parseExpression(0);
+        const assignment = diagramNode('asignacion', '=');
+        diagramLink(assignment, identifier);
+        if (value) diagramLink(assignment, value.root);
+        diagramLink(root, assignment);
+        leaves.push(identifier);
+        if (value) diagramLeaves(value.root, leaves);
+      } else {
+        diagramLink(root, identifier);
+        leaves.push(identifier);
+      }
+
+      if (!this.match(',')) break;
+    }
+
+    if (!declaredSomething) {
+      while (!this.atEnd() && !this.check(';')) this.next();
+    }
+
+    const semi = this.consumeSemicolon();
+    if (semi) {
+      diagramMerge(leaves, semi);
+      return { root: root, end: semi };
+    }
+    return { root: root, end: root };
+  }
+
+  parseExpressionStatement() {
+    const expression = this.parseExpression(0);
+    if (!expression) {
+      this.next();
+      return null;
+    }
+
+    const semi = this.consumeSemicolon();
+    if (semi) {
+      const leaves = [];
+      diagramLeaves(expression.root, leaves);
+      diagramMerge(leaves, semi);
+      return { root: expression.root, end: semi };
+    }
+    return { root: expression.root, end: expression.root };
+  }
+
+  parseExpression(minPrecedence) {
+    const min = minPrecedence == null ? 0 : minPrecedence;
+    let left = this.parseUnary();
+
+    while (left) {
+      const token = this.peek();
+      if (!token) break;
+      const precedence = DIDACTIC_PRECEDENCE[token.value];
+      if (precedence === undefined || precedence < min) break;
+
+      this.next();
+      const right = this.parseExpression(precedence + 1);
+      const node = diagramNode(token.value === '=' ? 'asignacion' : 'operador', token.value);
+      diagramLink(node, left.root);
+      if (right) diagramLink(node, right.root);
+      left = { root: node };
+      if (!right) break;
+    }
+
+    return left;
+  }
+
+  parseUnary() {
+    const token = this.peek();
+    if (!token) return null;
+
+    if (token.value === '-' || token.value === '+' || token.value === '!' ||
+        token.value === '~' || token.value === 'not') {
+      this.next();
+      const operand = this.parseUnary();
+      const node = diagramNode('operador', token.value);
+      if (operand) diagramLink(node, operand.root);
+      return { root: node };
+    }
+
+    return this.parsePrimary();
+  }
+
+  parsePrimary() {
+    const token = this.peek();
+    if (!token) return null;
+
+    if (token.type === 'numero' || token.type === 'cadena') {
+      this.next();
+      return { root: diagramNode('literal', token.type === 'cadena' ? shortenString(token.value) : token.value) };
+    }
+
+    if (token.type === 'identificador') {
+      this.next();
+      return { root: diagramNode('identificador', token.value) };
+    }
+
+    if (token.type === 'palabra_clave') {
+      this.next();
+      const lname = token.value;
+      if (lname === 'true' || lname === 'false') {
+        return { root: diagramNode('literal', lname) };
+      }
+      return { root: diagramNode('identificador', lname) };
+    }
+
+    if (token.value === '(') {
+      this.next();
+      const inner = this.parseExpression(0);
+      this.match(')');
+      return inner || { root: diagramNode('literal', '( )') };
+    }
+
+    if (token.value === '[') {
+      this.next();
+      const list = diagramNode('literal', '[lista]');
+      while (!this.atEnd() && !this.check(']')) {
+        const before = this.pos;
+        const item = this.parseExpression(0);
+        if (item) diagramLink(list, item.root);
+        if (!this.match(',')) {
+          if (!this.check(']')) this.next();
+          else break;
+        }
+        if (this.pos === before) this.next();
+      }
+      this.match(']');
+      return { root: list };
+    }
+
+    this.next();
+    return { root: diagramNode('identificador', token.value || token.type) };
+  }
+}
+
+function buildDidacticDiagram(tokens) {
+  return new DidacticParser(tokens).parseProgram();
+}
+
+/* Proyección del AST del parser real a un flujo vertical con `;` y `|` */
+function projectAstStatement(node, isStatement) {
+  if (!node) return null;
+
+  if (node.type === 'bloque') {
+    const open = diagramNode('puntuacion', '|');
+    let previous = open;
+    for (const child of node.children) {
+      const projectedChild = projectAstStatement(child, true);
+      if (!projectedChild) continue;
+      diagramLink(previous, projectedChild.root);
+      previous = projectedChild.end || projectedChild.root;
+    }
+    const close = diagramNode('puntuacion', '|');
+    diagramLink(previous, close);
+    return { root: open, end: close };
+  }
+
+  const diagram = diagramNode(node.type, node.label);
+  let end = diagram;
+
+  for (const child of node.children) {
+    const projectedChild = projectAstStatement(child, false);
+    if (!projectedChild) continue;
+    diagramLink(diagram, projectedChild.root);
+    end = projectedChild.end || projectedChild.root;
+  }
+
+  if (isStatement && diagramShouldEndWithSemicolon(node)) {
+    const semi = diagramNode('puntuacion', ';');
+    const leaves = [];
+    diagramLeaves(diagram, leaves);
+    diagramMerge(leaves.length ? leaves : [diagram], semi);
+    end = semi;
+  }
+
+  return { root: diagram, end: end };
+}
+
+function buildAstDiagram(ast) {
+  const root = diagramNode('programa', 'programa');
+  let previous = root;
+
+  if (ast && ast.children) {
+    for (const child of ast.children) {
+      const projected = projectAstStatement(child, true);
+      if (!projected) continue;
+      diagramLink(previous, projected.root);
+      previous = projected.end || projected.root;
+    }
+  }
+
+  return root;
+}
+
+function buildDiagram(tokens, langCode, ast) {
+  if (langCode === 'pseudo') return buildDidacticDiagram(tokens);
+  return buildAstDiagram(ast);
+}
+
+function countDiagramNodes(root, seen) {
+  if (!root) return 0;
+  const visited = seen || new Set();
+  if (visited.has(root)) return 0;
+  visited.add(root);
+  let total = 1;
+  for (const child of root.children) total += countDiagramNodes(child, visited);
+  return total;
+}
+
 /* ------------------------- Visualización ------------------------- */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -1994,7 +2445,8 @@ const NODE_STYLES = {
   parametro: { fill: '#182130', stroke: '#7f93ad' },
   condicion: { fill: '#221b2c', stroke: '#b39ddb' },
   iterable: { fill: '#12251f', stroke: '#5ec8a4' },
-  actualizacion: { fill: '#17222e', stroke: '#6f9fb8' }
+  actualizacion: { fill: '#17222e', stroke: '#6f9fb8' },
+  puntuacion: { fill: '#1a2230', stroke: '#93a3ba' }
 };
 
 const TOKEN_STYLES = {
@@ -2016,7 +2468,8 @@ const state = {
   ast: null,
   lang: null,
   collapsed: new Set(),
-  nodes: []
+  nodes: [],
+  layout: null
 };
 
 const view = { scale: 1, x: 0, y: 0 };
@@ -2040,63 +2493,156 @@ function truncateLabel(label) {
   return text.length > MAX_LABEL ? text.slice(0, MAX_LABEL - 2) + '…' : text;
 }
 
-/* ---------- Layout del árbol ---------- */
+/* ---------- Layout vertical del árbol ---------- */
+
+function visibleChildrenOf(node, collapsed) {
+  if (!node) return [];
+  if (collapsed && collapsed.has(node)) return [];
+  return node.children || [];
+}
+
+function averageOf(values) {
+  if (!values.length) return 0;
+  let total = 0;
+  for (const value of values) total += value;
+  return total / values.length;
+}
 
 function computeLayout(root, collapsed) {
+  const nodes = [];
+  const seen = new Set();
+
+  (function collect(node) {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    nodes.push(node);
+    for (const child of visibleChildrenOf(node, collapsed)) collect(child);
+  })(root);
+
+  /* Niveles por camino más largo (soporta convergencias de varios padres) */
+  const levels = new Map();
+  for (const node of nodes) levels.set(node, 0);
+  for (let pass = 0; pass < nodes.length + 2; pass++) {
+    let changed = false;
+    for (const node of nodes) {
+      const base = levels.get(node);
+      for (const child of visibleChildrenOf(node, collapsed)) {
+        if (!seen.has(child)) continue;
+        if (levels.get(child) < base + 1) {
+          levels.set(child, base + 1);
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  for (const node of nodes) {
+    node.labelText = truncateLabel(node.label);
+    const visibleCount = visibleChildrenOf(node, collapsed).length;
+    node.hiddenCount = Math.max(0, node.children.length - visibleCount);
+    node.width = Math.min(230, Math.max(58, node.labelText.length * 7.2 + 28));
+  }
+
+  /* Huecos de hojas: reparten las ramas de izquierda a derecha */
   let cursor = 0;
-  const infos = [];
+  const slotSeen = new Set();
 
-  function visit(node, depth) {
-    const visibleChildren = collapsed.has(node) ? [] : node.children;
-    const childInfos = visibleChildren.map((child) => visit(child, depth + 1));
-    const label = truncateLabel(node.label);
-    const width = Math.min(230, Math.max(64, label.length * 7.2 + 30));
+  function assignSlots(node) {
+    if (slotSeen.has(node)) return node.slot;
+    slotSeen.add(node);
+    const kids = visibleChildrenOf(node, collapsed);
 
-    let center;
-    if (childInfos.length) {
-      center = (childInfos[0].center + childInfos[childInfos.length - 1].center) / 2;
+    if (!kids.length) {
+      node.slot = cursor + node.width / 2;
+      cursor += node.width + GAP_X;
+    } else if (kids.length === 1) {
+      node.slot = assignSlots(kids[0]);
     } else {
-      center = cursor;
-      cursor += width + GAP_X;
+      for (const kid of kids) assignSlots(kid);
+      node.slot = (kids[0].slot + kids[kids.length - 1].slot) / 2;
+    }
+    return node.slot;
+  }
+
+  assignSlots(root);
+
+  const parentsOf = new Map();
+  for (const node of nodes) parentsOf.set(node, []);
+  for (const node of nodes) {
+    for (const child of visibleChildrenOf(node, collapsed)) {
+      if (parentsOf.has(child)) parentsOf.get(child).push(node);
+    }
+  }
+
+  for (const node of nodes) node.x = node.slot;
+
+  /*
+    Convergencia vertical:
+    - Nodo con varios padres (p. ej. `then` o `;`) se centra entre ellos.
+    - Nodo con varias ramas se centra sobre sus hijos.
+    - Cadena de un solo hijo hereda la X del padre.
+  */
+  for (let pass = 0; pass < 30; pass++) {
+    for (const node of nodes) {
+      const parents = parentsOf.get(node);
+      const kids = visibleChildrenOf(node, collapsed);
+
+      if (parents.length >= 2) {
+        node.x = averageOf(parents.map((parent) => parent.x));
+      } else if (kids.length >= 2) {
+        node.x = (kids[0].x + kids[kids.length - 1].x) / 2;
+      } else if (parents.length === 1 && visibleChildrenOf(parents[0], collapsed).length === 1) {
+        node.x = parents[0].x;
+      } else if (parents.length === 1) {
+        node.x = node.slot;
+      }
     }
 
-    const info = {
-      node,
-      depth,
-      center,
-      width,
-      label,
-      hiddenCount: node.children.length - visibleChildren.length,
-      children: childInfos
-    };
-    infos.push(info);
-    return info;
+    const rootKids = visibleChildrenOf(root, collapsed);
+    if (rootKids.length) {
+      root.x = rootKids.length === 1
+        ? rootKids[0].x
+        : (rootKids[0].x + rootKids[rootKids.length - 1].x) / 2;
+    }
   }
 
-  const rootInfo = visit(root, 0);
-
-  // Árbol horizontal: usamos la profundidad para la posición Y (fila por nivel)
-  // y el centro para la posición X (de izquierda a derecha)
-  let minCenter = Infinity;
-  let maxCenter = -Infinity;
-  for (const info of infos) {
-    minCenter = Math.min(minCenter, info.center - info.width / 2);
-    maxCenter = Math.max(maxCenter, info.center + info.width / 2);
+  /* Evita solapamientos dentro de un mismo nivel */
+  const byLevel = new Map();
+  for (const node of nodes) {
+    const level = levels.get(node);
+    if (!byLevel.has(level)) byLevel.set(level, []);
+    byLevel.get(level).push(node);
+  }
+  for (const group of byLevel.values()) {
+    group.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < group.length; i++) {
+      const previous = group[i - 1];
+      const current = group[i];
+      const minX = previous.x + previous.width / 2 + GAP_X + current.width / 2;
+      if (current.x < minX) current.x = minX;
+    }
   }
 
-  const padding = 34;
-  for (const info of infos) {
-    // Y horizontal: posición por fila (profundidad)
-    info.y = padding + info.depth * (NODE_H + GAP_X);
-    // X horizontal: basado en el centro (izquierda a derecha)
-    info.x = info.center - minCenter + padding;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let maxLevel = 0;
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x - node.width / 2);
+    maxX = Math.max(maxX, node.x + node.width / 2);
+    maxLevel = Math.max(maxLevel, levels.get(node));
+  }
+
+  const offset = DIAGRAM_PAD - minX;
+  for (const node of nodes) {
+    node.x += offset;
+    node.y = DIAGRAM_PAD + levels.get(node) * LEVEL_H;
   }
 
   return {
-    infos,
-    rootInfo,
-    width: padding * 2 + (maxCenter - minCenter) + NODE_H,
-    height: padding * 2 + infos.length * (NODE_H + GAP_X)
+    nodes: nodes,
+    width: (maxX - minX) + DIAGRAM_PAD * 2,
+    height: maxLevel * LEVEL_H + NODE_H + DIAGRAM_PAD * 2
   };
 }
 
@@ -2107,44 +2653,59 @@ function clearTreeLayers() {
   while (dom.edgesLayer.firstChild) dom.edgesLayer.removeChild(dom.edgesLayer.firstChild);
 }
 
+function canvasViewportSize() {
+  const wrap = dom.canvasWrap;
+  return {
+    width: wrap ? wrap.clientWidth : 800,
+    height: wrap ? wrap.clientHeight : 600
+  };
+}
+
+function applyCanvasSize() {
+  if (!dom.svg || !state.layout) return;
+  const wrapSize = canvasViewportSize();
+  dom.svg.style.width = Math.max(wrapSize.width, Math.ceil(state.layout.width * view.scale)) + 'px';
+  dom.svg.style.height = Math.max(wrapSize.height, Math.ceil(state.layout.height * view.scale)) + 'px';
+}
+
 function drawTree() {
   if (!state.ast || !dom.nodesLayer) return;
 
   clearTreeLayers();
   const layout = computeLayout(state.ast, state.collapsed);
-  state.nodes = layout.infos.map((info) => info.node);
+  state.layout = layout;
+  state.nodes = layout.nodes.slice();
+  const visible = new Set(layout.nodes);
 
-  for (const info of layout.infos) {
-    for (const child of info.children) {
-      // Arista horizontal: del padre al hijo (izquierda-derecha)
-      const x1 = info.x + info.width / 2;
-      const y1 = info.y + NODE_H / 2;
-      const x2 = child.x + child.width / 2;
-      const y2 = child.y + NODE_H / 2;
+  for (const node of layout.nodes) {
+    for (const child of visibleChildrenOf(node, state.collapsed)) {
+      if (!visible.has(child)) continue;
       const path = svgElement('path', {
         class: 'edge',
-        d: 'M ' + x1 + ' ' + y1 + ' L ' + x2 + ' ' + y2
+        d: 'M ' + node.x + ' ' + (node.y + NODE_H) + ' L ' + child.x + ' ' + child.y
       });
       dom.edgesLayer.appendChild(path);
     }
   }
 
-  layout.infos.forEach((info, index) => {
-    const style = NODE_STYLES[info.node.type] || NODE_STYLES.identificador;
+  layout.nodes.forEach((node, index) => {
+    const style = NODE_STYLES[node.type] || NODE_STYLES.identificador;
+    const left = node.x - node.width / 2;
+
     const group = svgElement('g', {
       class: 'node',
-      transform: 'translate(' + info.x + ', ' + info.y + ')',
+      transform: 'translate(' + left + ', ' + node.y + ')',
       'data-idx': String(index),
       tabindex: '0',
       role: 'button',
-      'aria-label': info.node.type + ': ' + (info.node.label || '')
+      'aria-label': node.type + ': ' + (node.label || '')
     });
 
     const rect = svgElement('rect', {
       class: 'node-rect',
       x: '0',
       y: '0',
-      width: String(info.width),
+      width: String(node.width),
       height: String(NODE_H),
       rx: '9',
       fill: style.fill,
@@ -2153,32 +2714,34 @@ function drawTree() {
     group.appendChild(rect);
 
     const title = svgElement('title');
-    title.textContent = info.node.type + ': ' + (info.node.label || '') +
-      (info.node.children.length ? ' (' + info.node.children.length + ' hijos)' : '');
+    title.textContent = node.type + ': ' + (node.label || '') +
+      (node.children.length ? ' (' + node.children.length + ' hijos)' : '');
     group.appendChild(title);
 
     const label = svgElement('text', {
       class: 'node-label',
-      x: String(info.hiddenCount > 0 ? info.width / 2 - 7 : info.width / 2),
+      x: String(node.hiddenCount > 0 ? node.width / 2 - 7 : node.width / 2),
       y: '21',
       'text-anchor': 'middle'
     });
-    label.textContent = info.label;
+    label.textContent = node.labelText;
     group.appendChild(label);
 
-    if (info.hiddenCount > 0) {
+    if (node.hiddenCount > 0) {
       const badge = svgElement('text', {
         class: 'node-badge',
-        x: String(info.width - 8),
+        x: String(node.width - 8),
         y: '21',
         'text-anchor': 'end'
       });
-      badge.textContent = '+' + info.hiddenCount;
+      badge.textContent = '+' + node.hiddenCount;
       group.appendChild(badge);
     }
 
     dom.nodesLayer.appendChild(group);
   });
+
+  applyCanvasSize();
 }
 
 function applyView() {
@@ -2190,40 +2753,45 @@ function applyView() {
 }
 
 function fitView() {
-  if (!state.ast || !dom.svg) return;
+  if (!state.ast || !dom.svg || !state.layout) return;
 
-  const svgBox = dom.svg.getBoundingClientRect();
-  if (!svgBox.width || !svgBox.height) return;
+  const wrapSize = canvasViewportSize();
+  if (!wrapSize.width || !wrapSize.height) return;
 
-  const content = dom.nodesLayer.getBBox();
-  if (!content.width || !content.height) return;
-
-  const padding = 48;
-  const scale = clamp(
-    Math.min(
-      (svgBox.width - padding * 2) / content.width,
-      (svgBox.height - padding * 2) / content.height,
-      1.2
-    ),
-    0.15,
-    1.2
-  );
+  /*
+    Ajuste inicial: encaja el árbol completo si sigue siendo legible; si es
+    muy largo se mantiene una escala mínima y el resto se recorre con scroll.
+  */
+  const padding = 30;
+  const widthRatio = (wrapSize.width - padding * 2) / state.layout.width;
+  const heightRatio = (wrapSize.height - padding * 2) / state.layout.height;
+  const scale = clamp(Math.min(widthRatio, heightRatio, 1), 0.6, 1);
 
   view.scale = scale;
-  view.x = (svgBox.width - content.width * scale) / 2 - content.x * scale;
-  view.y = (svgBox.height - content.height * scale) / 2 - content.y * scale;
+  applyCanvasSize();
+  const canvasWidth = Math.max(wrapSize.width, state.layout.width * scale);
+  const canvasHeight = Math.max(wrapSize.height, state.layout.height * scale);
+
+  view.x = (canvasWidth - state.layout.width * scale) / 2;
+  view.y = (canvasHeight - state.layout.height * scale) / 2;
   applyView();
+
+  if (dom.canvasWrap) {
+    dom.canvasWrap.scrollTop = 0;
+    dom.canvasWrap.scrollLeft = 0;
+  }
 }
 
 function zoomBy(factor) {
-  if (!dom.svg) return;
-  const box = dom.svg.getBoundingClientRect();
-  const cx = box.width / 2;
-  const cy = box.height / 2;
+  if (!dom.svg || !state.layout) return;
+  const wrap = dom.canvasWrap;
+  const cx = (wrap ? wrap.clientWidth : 800) / 2 + (wrap ? wrap.scrollLeft : 0);
+  const cy = (wrap ? wrap.clientHeight : 600) / 2 + (wrap ? wrap.scrollTop : 0);
   const nextScale = clamp(view.scale * factor, 0.12, 2.8);
   view.x = cx - (cx - view.x) * (nextScale / view.scale);
   view.y = cy - (cy - view.y) * (nextScale / view.scale);
   view.scale = nextScale;
+  applyCanvasSize();
   applyView();
 }
 
@@ -2270,6 +2838,11 @@ function resetResults(title, text) {
   state.tokens = [];
   state.nodes = [];
   state.collapsed = new Set();
+  state.layout = null;
+  if (dom.svg) {
+    dom.svg.style.width = '100%';
+    dom.svg.style.height = '100%';
+  }
   clearTreeLayers();
   showEmpty(title || 'Todavía no hay árbol', text || 'Analiza un fragmento de código para ver sus tokens y la jerarquía sintáctica.');
   setLanguagePill(null);
@@ -2287,7 +2860,7 @@ function renderTokenRows(tokens) {
     const row = document.createElement('tr');
     row.className = 'table-empty';
     const cell = document.createElement('td');
-    cell.colSpan = 3;
+    cell.colSpan = 2;
     cell.textContent = 'Sin tokens todavía.';
     row.appendChild(cell);
     dom.tokensBody.appendChild(row);
@@ -2332,11 +2905,6 @@ function renderTokenRows(tokens) {
 
     row.appendChild(syntaxCell);
 
-    const lineCell = document.createElement('td');
-    lineCell.className = 'col-line';
-    lineCell.textContent = String(token.line);
-    row.appendChild(lineCell);
-
     dom.tokensBody.appendChild(row);
   });
 }
@@ -2358,7 +2926,7 @@ function analyze() {
 
   if (!code.trim()) {
     setStatus('warn', 'El editor está vacío. Escribe o carga un ejemplo para comenzar.');
-    resetResults('No hay código que analizar', 'El editor está vacío. Pega código Python, Java, JavaScript, C o Rust.');
+    resetResults('No hay código que analizar', 'El editor está vacío. Pega código Python, Java, JavaScript, C, Rust o lenguaje didáctico.');
     return;
   }
 
@@ -2388,11 +2956,12 @@ function analyze() {
 
   try {
     const tokens = tokenize(code, detection.lang);
-    const ast = parse(tokens, detection.lang);
+    const parsed = detection.lang === 'pseudo' ? null : parse(tokens, detection.lang);
+    const diagram = buildDiagram(tokens, detection.lang, parsed);
     const visibleCount = tokens.filter((token) => token.type !== 'eof').length;
 
     state.tokens = tokens;
-    state.ast = ast;
+    state.ast = diagram;
     state.lang = detection.lang;
     state.collapsed = new Set();
 
@@ -2411,7 +2980,7 @@ function analyze() {
 
     requestAnimationFrame(() => fitView());
 
-    const nodeCount = countNodes(ast);
+    const nodeCount = countDiagramNodes(diagram);
     setStatus(
       'success',
       'Lenguaje detectado: ' + detection.name + ' · ' + visibleCount + ' tokens · ' +
@@ -2422,13 +2991,6 @@ function analyze() {
     setStatus('error', 'Error inesperado al analizar el código: ' + error.message);
     resetResults('Error de análisis', 'No fue posible construir el árbol. Revisa la sintaxis del fragmento.');
   }
-}
-
-function countNodes(node) {
-  if (!node) return 0;
-  let total = 1;
-  for (const child of node.children) total += countNodes(child);
-  return total;
 }
 
 function loadExample(code) {
@@ -2533,6 +3095,8 @@ function init() {
   /* Zoom con rueda */
   dom.svg.addEventListener('wheel', (event) => {
     if (!state.ast) return;
+    /* Rueda normal = scroll nativo del contenedor; Ctrl/Cmd + rueda = zoom */
+    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     const box = dom.svg.getBoundingClientRect();
     const mx = event.clientX - box.left;
@@ -2542,6 +3106,7 @@ function init() {
     view.x = mx - (mx - view.x) * (nextScale / view.scale);
     view.y = my - (my - view.y) * (nextScale / view.scale);
     view.scale = nextScale;
+    applyCanvasSize();
     applyView();
   }, { passive: false });
 
@@ -2640,7 +3205,14 @@ function openModalAST() {
     const originalSvg = document.querySelector("#ast-svg");
     if (originalSvg) {
       const svgClone = originalSvg.cloneNode(true);
-      svgClone.setAttribute("style", "width: 100%; height: auto; max-height: 600px;");
+      const layout = state.layout;
+      const cloneWidth = layout ? Math.ceil(layout.width) : 1000;
+      const cloneHeight = layout ? Math.ceil(layout.height) : 700;
+      svgClone.setAttribute('width', String(cloneWidth));
+      svgClone.setAttribute('height', String(cloneHeight));
+      svgClone.setAttribute('style', 'width: ' + cloneWidth + 'px; height: ' + cloneHeight + 'px; max-width: none;');
+      const cloneViewport = svgClone.querySelector('#viewport');
+      if (cloneViewport) cloneViewport.removeAttribute('transform');
       // Añadir focus-visible para nodos
       const nodesInClone = svgClone.querySelectorAll(".node");
       nodesInClone.forEach((n, i) => {
@@ -2818,7 +3390,11 @@ if (typeof module !== 'undefined' && module.exports) {
     detectLanguage,
     stripNoise,
     parse,
-    compactTokens
+    compactTokens,
+    buildDiagram,
+    buildDidacticDiagram,
+    buildAstDiagram,
+    countDiagramNodes
   };
 }
 

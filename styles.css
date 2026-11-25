@@ -100,6 +100,7 @@ button { font-family: inherit; }
 .badge--js { color: #ffe066; border-color: #3c361c; }
 .badge--c { color: #9fb8ff; border-color: #253256; }
 .badge--rust { color: #e8b08a; border-color: #3d2b22; }
+.badge--pseudo { color: #9df0d2; border-color: #1e4d3e; }
 
 /* ===== Layout ===== */
 .topbar,
@@ -187,6 +188,7 @@ button { font-family: inherit; }
 
 .panel-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -397,19 +399,29 @@ button { font-family: inherit; }
 
 .canvas-wrap {
   position: relative;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   background:
     radial-gradient(circle at 1px 1px, #1a2536 1px, transparent 0) 0 0 / 22px 22px,
     #0a111c;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #31465f #0a111c;
+}
+
+.canvas-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+.canvas-wrap::-webkit-scrollbar-track { background: #0a111c; }
+.canvas-wrap::-webkit-scrollbar-thumb {
+  background: #31465f;
+  border: 2px solid #0a111c;
+  border-radius: 999px;
 }
 
 .ast-svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  display: block;
+  min-width: 100%;
+  min-height: 100%;
   cursor: grab;
   touch-action: none;
 }
@@ -510,7 +522,7 @@ button { font-family: inherit; }
   pointer-events: none;
 }
 
-/* ===== Botón modal árbol =====
+/* ===== Botón modal árbol ===== */
 .tree-modal-btn {
   padding: 6px 12px;
   font-size: .72rem;
@@ -525,7 +537,7 @@ button { font-family: inherit; }
 }
 .tree-modal-btn:hover { background: #1e2c41; color: #fff; }
 
-/* ===== Modal AST =====
+/* ===== Modal AST ===== */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -730,7 +742,6 @@ button { font-family: inherit; }
 
 .tokens-table tbody tr:hover { background: #131e2e; }
 .tokens-table .col-index { color: #5b6c84; width: 44px; }
-.tokens-table .col-line { color: #7d90a8; width: 64px; }
 .tokens-table .token-value { color: #eaf1fb; }
 .tokens-table .token-value.is-empty { color: #4d5e74; }
 .tokens-table .token-syntax { color: #7d90a8; }

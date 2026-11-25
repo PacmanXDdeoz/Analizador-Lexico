@@ -13,6 +13,7 @@ Construida únicamente con **HTML5, CSS3 y JavaScript nativo (ES6+)**: sin frame
 | JavaScript | ✅ | ✅ (funciones flecha incluidas) |
 | C | ✅ | ✅ (directivas `#include` / `#define`) |
 | Rust | ✅ | ✅ (`fn`, `let mut`, macros `vec!` / `println!`) |
+| Didáctico | ✅ | ✅ (`if … then`, declaraciones `int a, b;`, asignaciones y llaves) |
 
 Otros contenidos (texto plano, HTML, SQL, PHP, XML, JSON…) se rechazan con un aviso claro y **no se genera el árbol**.
 
@@ -22,10 +23,12 @@ Otros contenidos (texto plano, HTML, SQL, PHP, XML, JSON…) se rechazan con un 
 - **Detección ponderada de lenguaje**: patrones característicos con umbral mínimo y dominancia sobre el segundo candidato; mensajes de error y de ambigüedad.
 - **AST jerárquico**: declaraciones, funciones, parámetros, `if` / `else`, `for`, `while`, llamadas, accesos, expresiones aritméticas y lógicas.
 - **SVG nativo e interactivo**: zoom con rueda, desplazamiento arrastrando, botón *Ajustar* y plegado/desplegado de nodos con clic (también con teclado).
-- **Tabla de tokens** colapsable con token, tipo y línea.
+- **Tabla de tokens** colapsable con índice y token `<'elemento', tipo>`.
 - **Interfaz oscura tipo IDE**, responsive con CSS Grid y Flexbox.
 - **Ejemplos** cargables para cada lenguaje.
 - **Atajos**: `Ctrl/Cmd + Enter` analiza, `Ctrl/Cmd + 0` ajusta la vista.
+
+El diagrama es un AST vertical (de arriba hacia abajo) con las sentencias encadenadas mediante nodos `;`, llaves como nodos `|` y scroll/zoom para árboles largos.
 
 ## Estructura
 

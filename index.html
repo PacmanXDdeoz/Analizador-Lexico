@@ -27,6 +27,7 @@
       <span class="badge badge--js">JavaScript</span>
       <span class="badge badge--c">C</span>
       <span class="badge badge--rust">Rust</span>
+      <span class="badge badge--pseudo">Didáctico</span>
     </div>
   </header>
 
@@ -45,6 +46,7 @@
         <button type="button" class="chip" data-example="javascript">JavaScript</button>
         <button type="button" class="chip" data-example="c">C</button>
         <button type="button" class="chip" data-example="rust">Rust</button>
+        <button type="button" class="chip" data-example="pseudo">Didáctico</button>
       </div>
 
       <div class="editor-wrap">
@@ -115,7 +117,7 @@
           <button type="button" id="btn-fit" class="zoom-btn zoom-btn--wide" title="Ajustar a la pantalla">Ajustar</button>
         </div>
 
-        <div class="canvas-hint">Rueda: zoom · Arrastrar: mover · Clic en nodo: plegar</div>
+        <div class="canvas-hint">Scroll: explorar · Ctrl+Rueda: zoom · Arrastrar: mover · Clic en nodo: plegar</div>
       </div>
 
       <details id="tokens-details" class="tokens-details" open>
@@ -129,11 +131,10 @@
               <tr>
                 <th scope="col">#</th>
                 <th scope="col">Token &lt;'elemento', tipo&gt;</th>
-                <th scope="col">Línea</th>
               </tr>
             </thead>
             <tbody id="tokens-body">
-              <tr class="table-empty"><td colspan="3">Sin tokens todavía.</td></tr>
+              <tr class="table-empty"><td colspan="2">Sin tokens todavía.</td></tr>
             </tbody>
           </table>
         </div>
